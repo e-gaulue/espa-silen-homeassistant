@@ -97,6 +97,24 @@ notification carrying its running *mode*, *current speed* and *power draw*. This
   power should climb, and climb **faster than linearly** (a variable-speed pump's draw rises
   steeply with speed). It is often a **16-bit** value — a pair of bytes; try both byte orders.
 
+**Anonymized example.** A status notification is one length-framed packet (a few dozen bytes).
+This is the *shape* to expect — every byte masked as `xx`, **illustrative only, not a real
+device dump**; capture your own to get the actual bytes and positions:
+
+```text
+xx xx LL xx xx xx xx xx   xx xx xx xx xx xx xx xx
+xx xx xx xx xx xx xx xx   xx xx xx xx xx xx xx xx
+xx xx xx xx xx xx xx xx   xx xx xx xx xx xx CK EN
+```
+
+- `xx xx … LL` — a fixed header followed by a length byte; the packet ends with a checksum
+  `CK` (often a plain XOR over the payload) and a terminator `EN`.
+- **mode** — one byte holding a fixed code per running state (stop / filtration / backwash / constant).
+- **current speed** — one byte that is *stable for a given speed* and steps when you change it
+  (locate it by stepping 1 → 10).
+- **power** — a 16-bit value that *drifts while speed is constant* and grows steeply with speed
+  (locate it by holding one speed and capturing several frames).
+
 What to give your AI: (1) a list of `running speed → full status frame (hex)` across the whole
 range, and (2) several frames captured at **one fixed speed**. Ask it for *"the byte that is
 constant per speed"* (current speed) and *"the byte(s) that grow with speed and fluctuate at
