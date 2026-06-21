@@ -106,15 +106,21 @@ def webservice():
 
     def get_state():
         paused = time.time() < ctrl["paused_until"]
-        if not paused:
-            with ble_lock:
-                if time.time() - cache["ts"] >= ttl:
-                    r = safe(ble_read)
-                    if isinstance(r, dict) and "error" not in r and r:
-                        cache["state"] = r; cache["ts"] = time.time()
-                    elif isinstance(r, dict) and "error" in r:
-                        cache["state"] = r
-        st = dict(cache["state"]); st["paused"] = paused; st["age_s"] = int(time.time() - cache["ts"])
+        if paused:
+            # While paused the BLE link is handed over to the phone app, so we no longer
+            # know the real pump state. Report mode "paused" (not the last cached "running")
+            # so Home Assistant interlocks/safety cut the aux relays instead of trusting a
+            # stale value. This read is instant (no BLE), which keeps the switch snappy.
+            return {"mode": "paused", "niveau": None, "puissance": None,
+                    "paused": True, "age_s": int(time.time() - cache["ts"])}
+        with ble_lock:
+            if time.time() - cache["ts"] >= ttl:
+                r = safe(ble_read)
+                if isinstance(r, dict) and "error" not in r and r:
+                    cache["state"] = r; cache["ts"] = time.time()
+                elif isinstance(r, dict) and "error" in r:
+                    cache["state"] = r
+        st = dict(cache["state"]); st["paused"] = False; st["age_s"] = int(time.time() - cache["ts"])
         return st
 
     def set_worker():

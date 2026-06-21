@@ -17,11 +17,17 @@ rest:
       - name: "Pump speed"
         unique_id: pump_speed
         value_template: "{{ value_json.niveau }}"
+        # ride out the start-up ramp / partial reads instead of showing a wrong value
+        availability: "{{ value_json.niveau is defined and value_json.niveau not in [none, ''] }}"
       - name: "Pump power"
         unique_id: pump_power
         unit_of_measurement: "W"
         device_class: power
         value_template: "{{ value_json.puissance }}"
+        availability: "{{ value_json.puissance is defined and value_json.puissance not in [none, ''] }}"
+      - name: "Pump paused"
+        unique_id: pump_paused
+        value_template: "{{ 'on' if value_json.paused else 'off' }}"
 
 rest_command:
   pump_set:
@@ -31,6 +37,19 @@ rest_command:
     password: !secret pump_ws_pass
     content_type: "application/json"
     payload: '{"param":"{{ param }}","valeur":{{ valeur }}}'
+  # hand the BLE link over to the phone app for a while (the agent disconnects/steps aside)
+  pump_pause:
+    url: http://192.168.1.x:8095/pause
+    method: POST
+    username: !secret pump_ws_user
+    password: !secret pump_ws_pass
+    content_type: "application/json"
+    payload: '{"minutes": {{ minutes | default(5) }}}'
+  pump_resume:
+    url: http://192.168.1.x:8095/resume
+    method: POST
+    username: !secret pump_ws_user
+    password: !secret pump_ws_pass
 
 input_number:
   pump_filtration_speed:
@@ -38,3 +57,14 @@ input_number:
     min: 1
     max: 10
     step: 1
+
+# A toggle for "who talks to the pump": ON = Home Assistant, OFF = paused so the
+# phone app can connect. An input_boolean renders as a real toggle, keeps its
+# position (no bounce), and survives restarts. The pause/resume side effects live
+# in an automation that reacts to this toggle (see automations.example.yaml #0).
+#   (An optimistic `template` switch also works but HA renders it as two
+#    assumed-state buttons rather than a single toggle.)
+input_boolean:
+  pump_ha_control:
+    name: "Pump — HA control"
+    icon: mdi:home-automation

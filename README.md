@@ -159,17 +159,40 @@ HTTP **Basic auth** (set in `config.ini`). See [`config.example.ini`](config.exa
 This is the part you can reuse directly — nothing proprietary here. Full examples in
 [`homeassistant/`](homeassistant/). In short:
 
-- a **`rest`** sensor set reads `/state` → `sensor.pump_mode`, `sensor.pump_speed`, `sensor.pump_power`;
-- a **`rest_command`** posts to `/set`;
+- a **`rest`** sensor set reads `/state` → `sensor.pump_mode`, `sensor.pump_speed`, `sensor.pump_power`,
+  `sensor.pump_paused`;
+- a **`rest_command`** posts to `/set`, `/pause`, `/resume`;
 - an **`input_number`** holds the desired filtration speed;
+- an **`input_boolean.pump_ha_control`** is the **pause/resume toggle** (ON = HA drives the pump,
+  OFF = paused so you can use the phone app);
 - **automations** then do what evopool can't, e.g.:
   - **schedule** the filtration speed (low at night / normal by day / higher during the cleaner cycle),
   - **interlocks**: run the chlorinator only when the pump runs at/above some speed; run the
     booster only above a higher speed,
-  - **safety**: if the pump stops or stops answering → cut chlorinator + booster.
+  - **safety**: if the pump stops, is paused, or stops answering → cut chlorinator + booster.
 
 See [`homeassistant/automations.example.yaml`](homeassistant/automations.example.yaml) for
 commented examples (event-driven on the sensors, with periodic re-assert as a backstop).
+
+### The pause toggle (use the app without a fight)
+
+The pump accepts **one BLE connection at a time**. If the agent keeps the link (and especially if
+your Linux box has *trusted* the pump, so BlueZ auto-reconnects), the **phone app can never get in**.
+So `/pause` makes the agent **step aside** — disconnect and, if needed, drop the trust — for a few
+minutes, then auto-resume. The `input_boolean.pump_ha_control` toggle wires this to one tap, and a
+handful of small automations make it robust. A few things worth copying (each one bit us first):
+
+- **Report a distinct "paused" mode.** While paused the agent no longer knows the real state, so
+  `/state` returns `mode: "paused"` (not the last cached "running" value). That single change makes
+  every existing interlock/safety cut the aux relays on its own — no special-casing needed.
+- **Use an `input_boolean`, not an optimistic `template` switch.** A template switch *with* a `state`
+  tied to the (slow, 90 s) rest sensor **bounces back** right after you flip it. Making it optimistic
+  fixes the bounce but HA then renders it as two *assumed-state* buttons instead of a toggle. An
+  `input_boolean` is a real toggle, keeps its position, and survives restarts.
+- **Don't force a BLE read on resume.** Calling `homeassistant.update_entity` after `/resume` triggers
+  a full ~20-30 s BLE read that **blocks the service call**. On *pause* the read is instant (no BLE),
+  so refresh there to flip the interlocks immediately; on resume, just let the next poll catch up.
+- **Auto-resume + a default-on at boot + an alert** if a pause never confirms (agent unreachable).
 
 ## Running it
 

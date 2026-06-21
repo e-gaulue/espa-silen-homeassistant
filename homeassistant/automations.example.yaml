@@ -1,19 +1,43 @@
 # Example Home Assistant automations built on top of the evopool_agent web-service.
 # These are the things the evopool app cannot do. Adapt the placeholder entities:
-#   sensor.pump_mode / sensor.pump_speed          <- from the rest sensors
+#   sensor.pump_mode / sensor.pump_speed           <- from the rest sensors
 #   input_number.pump_filtration_speed             <- desired-speed helper
+#   input_boolean.pump_ha_control                  <- the HA-control / pause toggle
 #   switch.pool_chlorinator / switch.pool_booster  <- your relays (e.g. a Shelly)
 # "filtration" below is whatever string YOUR ble_read() returns for the normal
-# running mode. Speeds are an example 1-10 scale.
+# running mode; "paused" is what the agent reports while paused. Speeds 1-10.
 #
 # Pattern used everywhere: event-driven on the sensors (instant reaction) + a
 # periodic time_pattern as a robustness backstop.
 
+# 0) Pause/resume side-effects when the HA-control toggle flips.
+#    OFF -> pause the agent (hands the BLE link to the phone app) + cut aux now +
+#    refresh the sensor (the paused read is instant, so mode flips to "paused" and
+#    the interlocks react immediately). ON -> resume.
+#    NOTE: do NOT call homeassistant.update_entity on resume — out of pause that
+#    forces a ~20-30 s BLE read which would block this automation.
+- alias: "Pump — pause/resume on toggle"
+  triggers:
+    - {entity_id: input_boolean.pump_ha_control, to: 'off', trigger: state, id: pause}
+    - {entity_id: input_boolean.pump_ha_control, to: 'on',  trigger: state, id: resume}
+  actions:
+    - choose:
+        - conditions: "{{ trigger.id == 'pause' }}"
+          sequence:
+            - {action: rest_command.pump_pause, data: {minutes: 5}}
+            - {action: switch.turn_off, target: {entity_id: [switch.pool_chlorinator, switch.pool_booster]}}
+            - {action: homeassistant.update_entity, target: {entity_id: sensor.pump_mode}}
+      default:
+        - {action: rest_command.pump_resume}
+  mode: queued
+
 # 1) Schedule the filtration speed: low (1) at night, normal (4) by day.
+#    "Day" here = from 1 h after sunrise to 1 h after sunset (the `sun` condition with
+#    offsets). Drop the offsets for plain sunrise..sunset.
 - alias: "Pump speed — night/day"
   triggers:
-    - {event: sunrise, trigger: sun}
-    - {event: sunset, trigger: sun}
+    - {event: sunrise, offset: '01:00:00', trigger: sun}
+    - {event: sunset,  offset: '01:00:00', trigger: sun}
     - {minutes: /30, trigger: time_pattern}
     - {trigger: homeassistant, event: start}
   conditions:
@@ -22,7 +46,12 @@
       value_template: "{{ not (today_at('08:00') <= now() < today_at('09:00')) }}"
   actions:
     - choose:
-        - conditions: "{{ is_state('sun.sun','above_horizon') }}"
+        - conditions:
+            - condition: sun
+              after: sunrise
+              after_offset: '01:00:00'
+              before: sunset
+              before_offset: '01:00:00'
           sequence:
             - {action: input_number.set_value, target: {entity_id: input_number.pump_filtration_speed}, data: {value: 4}}
       default:
@@ -58,6 +87,7 @@
       then:
         - {action: input_number.set_value, target: {entity_id: input_number.pump_filtration_speed}, data: {value: 6}}
         - if:
+            - {condition: state, entity_id: input_boolean.pump_ha_control, state: 'on'}   # not paused
             - {condition: state, entity_id: sensor.pump_mode, state: filtration}
             - {condition: numeric_state, entity_id: sensor.pump_speed, above: 5}   # >= 6
           then: [{action: switch.turn_on,  target: {entity_id: switch.pool_booster}}]
@@ -76,6 +106,7 @@
   actions:
     - choose:
         - conditions:
+            - {condition: state, entity_id: input_boolean.pump_ha_control, state: 'on'}   # not paused
             - {condition: state, entity_id: sensor.pump_mode, state: filtration}
             - {condition: numeric_state, entity_id: sensor.pump_speed, above: 3}   # >= 4
           sequence: [{action: switch.turn_on, target: {entity_id: switch.pool_chlorinator}}]
@@ -83,10 +114,10 @@
         - {action: switch.turn_off, target: {entity_id: switch.pool_chlorinator}}
   mode: single
 
-# 5) SAFETY: pump stopped or not answering -> cut chlorinator + booster.
-#    The state trigger reacts as soon as the pump leaves "filtration" (or goes
-#    unavailable); the /1 min backstop also catches a relay switched on while the
-#    pump is already down.
+# 5) SAFETY: pump stopped, paused or not answering -> cut chlorinator + booster.
+#    The state trigger reacts as soon as the pump leaves "filtration" (it reports
+#    "paused" while the link is handed to the phone app, or goes unavailable); the
+#    /1 min backstop also catches a relay switched on while the pump is already down.
 - alias: "Pool safety — pump down -> cut aux"
   triggers:
     - {entity_id: [sensor.pump_mode, sensor.pump_speed], trigger: state}
@@ -98,4 +129,49 @@
     - action: switch.turn_off
       target:
         entity_id: [switch.pool_chlorinator, switch.pool_booster]
+  mode: single
+
+# 6) Auto-resume: if the HA-control switch stays off (paused) for 5 min, flip it back
+#    on. Belt-and-suspenders with the agent's own pause auto-expiry.
+- alias: "Pump — auto-resume after 5 min paused"
+  triggers:
+    - {entity_id: input_boolean.pump_ha_control, to: 'off', for: {minutes: 5}, trigger: state}
+  actions:
+    - {action: input_boolean.turn_on, target: {entity_id: input_boolean.pump_ha_control}}
+  mode: single
+
+# 7) Known state on boot: the optimistic switch starts off/unknown, so resume on start.
+- alias: "Pump — HA control by default on start"
+  triggers:
+    - {trigger: homeassistant, event: start}
+  actions:
+    - {delay: '00:00:30'}
+    - {action: input_boolean.turn_on, target: {entity_id: input_boolean.pump_ha_control}}
+  mode: single
+
+# 8) Alert if a requested pause never confirms (agent unreachable): switch off 2 min
+#    but the pump never reported "paused".
+- alias: "Pump — alert if pause not confirmed"
+  triggers:
+    - {entity_id: input_boolean.pump_ha_control, to: 'off', for: {minutes: 2}, trigger: state}
+  conditions:
+    - condition: template
+      value_template: "{{ not is_state('sensor.pump_mode','paused') }}"
+  actions:
+    - action: persistent_notification.create
+      data:
+        notification_id: pump_pause_failed
+        title: "Pool pump — pause not confirmed"
+        message: >-
+          The HA-control switch has been off for 2 min but the agent never reported
+          "paused" (mode = {{ states('sensor.pump_mode') }}). The agent may be unreachable.
+  mode: single
+
+# 9) Clear that alert once resolved (pause confirmed, or back to HA control).
+- alias: "Pump — clear pause alert"
+  triggers:
+    - {entity_id: sensor.pump_mode, to: 'paused', trigger: state}
+    - {entity_id: input_boolean.pump_ha_control, to: 'on', trigger: state}
+  actions:
+    - {action: persistent_notification.dismiss, data: {notification_id: pump_pause_failed}}
   mode: single
