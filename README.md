@@ -42,7 +42,11 @@ Until then, here's a do-it-yourself bridge.
 You really only need **two operations** to make the pump useful:
 
 1. **read** its current state — the running *mode* and the *speed*;
-2. **set** one thing — the **filtration speed** — which you then *schedule* from Home Assistant.
+2. **set** a setting — in fact **any** value on the configuration screen (the two filtration
+   speeds, the two backwash speeds, the constant-mode speed, the cycle/first-filtration
+   durations, the ramp). A single config write carries them all. In practice the **low
+   filtration speed** is the one worth *scheduling* from Home Assistant, but you can write any
+   of them.
 
 How to get there (an afternoon's work, easy to reproduce with an AI assistant):
 
@@ -127,8 +131,10 @@ evopool app). Reads are **on-demand**: Home Assistant polls `/state` on its own 
 | POST | `/pause` | `{"minutes":5}` | frees the BLE link for the evopool app |
 | POST | `/resume` | – | – |
 
-All endpoints require HTTP **Basic auth** (set in `config.ini`). See
-[`config.example.ini`](config.example.ini).
+`param` can be **any** configuration field shown on the app's settings screen — the two
+filtration speeds, the two backwash speeds, the constant-mode speed, the durations, the ramp —
+not only `filtr_basse` (that one is simply what our examples schedule). All endpoints require
+HTTP **Basic auth** (set in `config.ini`). See [`config.example.ini`](config.example.ini).
 
 ## Home Assistant integration
 

@@ -51,10 +51,13 @@ def ble_read():
 
 
 def ble_set(param, value):
-    """Apply ONE setting and return (ok: bool, state: dict).
-    In practice a single writable setting is enough — the low filtration speed —
-    which you then schedule from Home Assistant (e.g. night/day/booster levels).
-    Implement: read current config, change the field, write it back."""
+    """Apply ONE configuration setting and return (ok: bool, state: dict).
+    The pump config holds SEVERAL writable fields — everything on the app's
+    configuration screen: the two filtration speeds, the two backwash speeds, the
+    constant-mode speed, the cycle/first-filtration durations and the ramp. `param`
+    selects which one. Our Home Assistant examples only schedule the low filtration
+    speed, but any field works.
+    Implement: read current config, change the selected field, write it back."""
     raise NotImplementedError("Decode your pump's protocol and implement ble_set() — see README.md")
 # ===============================================================================
 
