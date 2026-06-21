@@ -1,0 +1,101 @@
+# Example Home Assistant automations built on top of the evopool_agent web-service.
+# These are the things the evopool app cannot do. Adapt the placeholder entities:
+#   sensor.pump_mode / sensor.pump_speed          <- from the rest sensors
+#   input_number.pump_filtration_speed             <- desired-speed helper
+#   switch.pool_chlorinator / switch.pool_booster  <- your relays (e.g. a Shelly)
+# "filtration" below is whatever string YOUR ble_read() returns for the normal
+# running mode. Speeds are an example 1-10 scale.
+#
+# Pattern used everywhere: event-driven on the sensors (instant reaction) + a
+# periodic time_pattern as a robustness backstop.
+
+# 1) Schedule the filtration speed: low (1) at night, normal (4) by day.
+- alias: "Pump speed — night/day"
+  triggers:
+    - {event: sunrise, trigger: sun}
+    - {event: sunset, trigger: sun}
+    - {minutes: /30, trigger: time_pattern}
+    - {trigger: homeassistant, event: start}
+  conditions:
+    # leave the speed to the booster automation during its window
+    - condition: template
+      value_template: "{{ not (today_at('08:00') <= now() < today_at('09:00')) }}"
+  actions:
+    - choose:
+        - conditions: "{{ is_state('sun.sun','above_horizon') }}"
+          sequence:
+            - {action: input_number.set_value, target: {entity_id: input_number.pump_filtration_speed}, data: {value: 4}}
+      default:
+        - {action: input_number.set_value, target: {entity_id: input_number.pump_filtration_speed}, data: {value: 1}}
+  mode: single
+
+# 2) Apply the desired speed to the pump (helper -> agent).
+- alias: "Pump — apply desired speed"
+  triggers:
+    - {entity_id: input_number.pump_filtration_speed, trigger: state}
+    - {trigger: homeassistant, event: start}
+  conditions:
+    - condition: template
+      value_template: "{{ states('input_number.pump_filtration_speed') not in ['unknown','unavailable'] }}"
+  actions:
+    - action: rest_command.pump_set
+      data:
+        param: filtr_basse
+        valeur: "{{ states('input_number.pump_filtration_speed')|int }}"
+  mode: single
+
+# 3) Booster/cleaner window (e.g. 08:00-09:00): raise speed to 6, then run the
+#    booster only once the pump is actually fast enough; back to normal after.
+- alias: "Pool booster — 08:00-09:00"
+  triggers:
+    - {at: '08:00:00', trigger: time}
+    - {at: '09:00:00', trigger: time}
+    - {entity_id: [sensor.pump_mode, sensor.pump_speed], trigger: state}
+    - {minutes: /10, trigger: time_pattern}
+  actions:
+    - if:
+        - {condition: time, after: '08:00:00', before: '09:00:00'}
+      then:
+        - {action: input_number.set_value, target: {entity_id: input_number.pump_filtration_speed}, data: {value: 6}}
+        - if:
+            - {condition: state, entity_id: sensor.pump_mode, state: filtration}
+            - {condition: numeric_state, entity_id: sensor.pump_speed, above: 5}   # >= 6
+          then: [{action: switch.turn_on,  target: {entity_id: switch.pool_booster}}]
+          else: [{action: switch.turn_off, target: {entity_id: switch.pool_booster}}]
+      else:
+        - {action: switch.turn_off, target: {entity_id: switch.pool_booster}}
+        - {action: input_number.set_value, target: {entity_id: input_number.pump_filtration_speed},
+           data: {value: "{{ 4 if is_state('sun.sun','above_horizon') else 1 }}"}}
+  mode: single
+
+# 4) Chlorinator interlock: only while filtering at/above a minimum speed.
+- alias: "Pool chlorinator — only with enough flow"
+  triggers:
+    - {entity_id: [sensor.pump_mode, sensor.pump_speed], trigger: state}
+    - {minutes: /30, trigger: time_pattern}
+  actions:
+    - choose:
+        - conditions:
+            - {condition: state, entity_id: sensor.pump_mode, state: filtration}
+            - {condition: numeric_state, entity_id: sensor.pump_speed, above: 3}   # >= 4
+          sequence: [{action: switch.turn_on, target: {entity_id: switch.pool_chlorinator}}]
+      default:
+        - {action: switch.turn_off, target: {entity_id: switch.pool_chlorinator}}
+  mode: single
+
+# 5) SAFETY: pump stopped or not answering -> cut chlorinator + booster.
+#    The state trigger reacts as soon as the pump leaves "filtration" (or goes
+#    unavailable); the /1 min backstop also catches a relay switched on while the
+#    pump is already down.
+- alias: "Pool safety — pump down -> cut aux"
+  triggers:
+    - {entity_id: [sensor.pump_mode, sensor.pump_speed], trigger: state}
+    - {minutes: /1, trigger: time_pattern}
+  conditions:
+    - condition: template
+      value_template: "{{ not is_state('sensor.pump_mode','filtration') }}"
+  actions:
+    - action: switch.turn_off
+      target:
+        entity_id: [switch.pool_chlorinator, switch.pool_booster]
+  mode: single

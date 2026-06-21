@@ -1,0 +1,40 @@
+# Home Assistant: read/write the pump through the evopool_agent web-service.
+# Add the agent credentials to secrets.yaml:
+#   pump_ws_user: admin
+#   pump_ws_pass: changeme
+# Replace 192.168.1.x with the host running evopool_agent.
+
+rest:
+  - resource: http://192.168.1.x:8095/state
+    scan_interval: 90       # the agent reads BLE on demand; HA drives the cadence
+    timeout: 60             # a BLE read takes ~20-30 s
+    username: !secret pump_ws_user
+    password: !secret pump_ws_pass
+    sensor:
+      - name: "Pump mode"
+        unique_id: pump_mode
+        value_template: "{{ value_json.mode }}"
+      - name: "Pump speed"
+        unique_id: pump_speed
+        value_template: "{{ value_json.niveau }}"
+      - name: "Pump power"
+        unique_id: pump_power
+        unit_of_measurement: "W"
+        device_class: power
+        value_template: "{{ value_json.puissance }}"
+
+rest_command:
+  pump_set:
+    url: http://192.168.1.x:8095/set
+    method: POST
+    username: !secret pump_ws_user
+    password: !secret pump_ws_pass
+    content_type: "application/json"
+    payload: '{"param":"{{ param }}","valeur":{{ valeur }}}'
+
+input_number:
+  pump_filtration_speed:
+    name: Pump filtration speed (desired)
+    min: 1
+    max: 10
+    step: 1
